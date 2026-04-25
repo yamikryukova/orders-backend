@@ -1,0 +1,50 @@
+[tool.ruff]
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    ".venv",
+    "venv",
+    "env",
+    "migrations",
+]
+
+line-length = 120
+indent-width = 4
+target-version = "py310"
+
+[tool.ruff.lint]
+# E: pycodestyle errors
+# W: pycodestyle warnings
+# F: pyflakes
+# I: isort
+# C4: flake8-comprehensions
+# B: flake8-bugbear
+# UP: pyupgrade
+# DJ: flake8-django
+# SIM: flake8-simplify
+# RUF: Ruff-specific rules
+select = ["E", "W", "F", "I", "C4", "B", "UP", "DJ", "SIM", "RUF", "T20"]
+
+ignore = [
+    "E501",
+    "RUF012",
+]
+
+fixable = ["ALL"]
+unfixable = []
+
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ruff.lint.isort]
+known-first-party = ["backend", "orders"]

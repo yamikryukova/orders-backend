@@ -8,8 +8,14 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from backend.models import Category, ConfirmEmailToken, ProductInfo, Shop, User
-from backend.serializers import CategorySerializer, ProductInfoSerializer, ShopSerializer, UserSerializer
+from backend.models import Category, ConfirmEmailToken, Contact, ProductInfo, Shop, User
+from backend.serializers import (
+    CategorySerializer,
+    ContactSerializer,
+    ProductInfoSerializer,
+    ShopSerializer,
+    UserSerializer,
+)
 
 
 class RegisterAccount(APIView):
@@ -196,3 +202,60 @@ class ProductInfoView(APIView):
 
         serializer = ProductInfoSerializer(query, many=True)
         return Response(serializer.data)
+
+
+class ContactView(APIView):
+    """
+    Класс-представление для работы с адресами доставки (контактами) пользователя.
+    Поддерживает полный CRUD (Создание, Чтение, Обновление, Удаление).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        # Отдаем контакты только текущего пользователя
+        contacts = Contact.objects.filter(user=request.user)
+        serializer = ContactSerializer(contacts, many=True)
+        return Response(serializer.data)
+
+    def post(self, request, *args, **kwargs):
+        serializer = ContactSerializer(data=request.data)
+        if serializer.is_valid():
+            # Привязываем контакт к текущему авторизованному юзеру
+            serializer.save(user=request.user)
+            return Response({"Status": True}, status=status.HTTP_201_CREATED)
+        return Response({"Status": False, "Errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+    def put(self, request, *args, **kwargs):
+        contact_id = request.data.get("id")
+        if not contact_id:
+            return Response(
+                {"Status": False, "Errors": "Не указан id контакта (поле id)"}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            # Проверяем, что чужой контакт не редактируют
+            contact = Contact.objects.get(id=contact_id, user=request.user)
+        except Contact.DoesNotExist:
+            return Response({"Status": False, "Errors": "Контакт не найден"}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = ContactSerializer(contact, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response({"Status": True}, status=status.HTTP_200_OK)
+        return Response({"Status": False, "Errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, *args, **kwargs):
+        # Удаление может приходить списком id, например items="1,2,3"
+        items = request.data.get("items")
+        if items:
+            items_list = items.split(",")
+            # Фильтруем по user=request.user, защита от хакеров
+            deleted_count, _ = Contact.objects.filter(id__in=items_list, user=request.user).delete()
+            if deleted_count > 0:
+                return Response({"Status": True, "Удалено": deleted_count}, status=status.HTTP_200_OK)
+            return Response({"Status": False, "Errors": "Контакты не найдены"}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(
+            {"Status": False, "Errors": "Не переданы id контактов (поле items)"}, status=status.HTTP_400_BAD_REQUEST
+        )

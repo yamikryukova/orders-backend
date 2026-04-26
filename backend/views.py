@@ -36,6 +36,7 @@ from backend.serializers import (
     ShopSerializer,
     UserSerializer,
 )
+from backend.signals import new_user_registered
 
 
 class RegisterAccount(APIView):
@@ -72,6 +73,9 @@ class RegisterAccount(APIView):
                     )
                     user.set_password(request.data["password"])
                     user.save()
+
+                    new_user_registered.send(sender=self.__class__, user_id=user.id)
+
                     return Response(
                         {"Status": True, "Message": "Пользователь успешно создан! Подтвердите email."},
                         status=status.HTTP_201_CREATED,

@@ -1,6 +1,7 @@
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
 from django.db import IntegrityError
+from django.db.models import F, Sum
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.generics import ListAPIView
@@ -8,10 +9,12 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from backend.models import Category, ConfirmEmailToken, Contact, ProductInfo, Shop, User
+from backend.models import Category, ConfirmEmailToken, Contact, Order, OrderItem, ProductInfo, Shop, User
 from backend.serializers import (
     CategorySerializer,
     ContactSerializer,
+    OrderItemSerializer,
+    OrderSerializer,
     ProductInfoSerializer,
     ShopSerializer,
     UserSerializer,
@@ -258,4 +261,136 @@ class ContactView(APIView):
 
         return Response(
             {"Status": False, "Errors": "Не переданы id контактов (поле items)"}, status=status.HTTP_400_BAD_REQUEST
+        )
+
+
+class BasketView(APIView):
+    """
+    Класс-представление для работы с корзиной пользователя.
+    Корзина — это просто объект Order со статусом 'basket'.
+    Поддерживает добавление/удаление/изменение товаров в корзине.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        # Находим корзину юзера и считаем общую сумму через annotate
+        basket = (
+            Order.objects.filter(user=request.user, state="basket")
+            .prefetch_related(
+                "ordered_items__product_info__product__category",
+                "ordered_items__product_info__product_parameters__parameter",
+            )
+            .annotate(total_sum=Sum(F("ordered_items__quantity") * F("ordered_items__product_info__price")))
+            .distinct()
+        )
+
+        serializer = OrderSerializer(basket, many=True)
+        return Response(serializer.data)
+
+    def post(self, request, *args, **kwargs):
+        items = request.data.get("items")
+        if items:
+            basket, _ = Order.objects.get_or_create(user=request.user, state="basket")
+            # Проходим по всем переданным позициям (items - это список словарей)
+            created_count = 0
+            for item in items:
+                item.update({"order": basket.id})
+                serializer = OrderItemSerializer(data=item)
+                if serializer.is_valid():
+                    try:
+                        serializer.save()
+                        created_count += 1
+                    except IntegrityError:
+                        return Response(
+                            {"Status": False, "Errors": "Товар уже есть в корзине"}, status=status.HTTP_400_BAD_REQUEST
+                        )
+                else:
+                    return Response({"Status": False, "Errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+            return Response({"Status": True, "Создано": created_count}, status=status.HTTP_201_CREATED)
+        return Response(
+            {"Status": False, "Errors": "Не переданы товары для добавления (поле items)"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    def put(self, request, *args, **kwargs):
+        items = request.data.get("items")
+        if items:
+            basket, _ = Order.objects.get_or_create(user=request.user, state="basket")
+            updated_count = 0
+            for item in items:
+                # Ищем позицию в корзине и обновляем количество
+                order_item = OrderItem.objects.filter(order=basket, product_info_id=item["product_info"]).first()
+                if order_item:
+                    order_item.quantity = item["quantity"]
+                    order_item.save()
+                    updated_count += 1
+            return Response({"Status": True, "Обновлено": updated_count}, status=status.HTTP_200_OK)
+        return Response(
+            {"Status": False, "Errors": "Не переданы товары (поле items)"}, status=status.HTTP_400_BAD_REQUEST
+        )
+
+    def delete(self, request, *args, **kwargs):
+        items = request.data.get("items")
+        if items:
+            items_list = str(items).split(",")
+            basket, _ = Order.objects.get_or_create(user=request.user, state="basket")
+            deleted_count, _ = OrderItem.objects.filter(order=basket, product_info_id__in=items_list).delete()
+            return Response({"Status": True, "Удалено": deleted_count}, status=status.HTTP_200_OK)
+        return Response(
+            {"Status": False, "Errors": "Не переданы id товаров (поле items)"}, status=status.HTTP_400_BAD_REQUEST
+        )
+
+
+class OrderView(APIView):
+    """
+    Класс-представление для получения оформленных заказов
+    и конвертации открытой "корзины" в реальный заказ.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        # Отдаем все заказы пользователя, ИСКЛЮЧАЯ текущую корзину (state='basket')
+        orders = (
+            Order.objects.filter(user=request.user)
+            .exclude(state="basket")
+            .prefetch_related(
+                "ordered_items__product_info__product__category",
+                "ordered_items__product_info__product_parameters__parameter",
+            )
+            .annotate(total_sum=Sum(F("ordered_items__quantity") * F("ordered_items__product_info__price")))
+            .distinct()
+        )
+
+        serializer = OrderSerializer(orders, many=True)
+        return Response(serializer.data)
+
+    def post(self, request, *args, **kwargs):
+        contact_id = request.data.get("contact")
+        if contact_id:
+            try:
+                # Шаг 1. Находим открытую корзину пользователя
+                basket = Order.objects.get(user=request.user, state="basket")
+            except Order.DoesNotExist:
+                return Response(
+                    {"Status": False, "Errors": "Нет открытой корзины для оформления"}, status=status.HTTP_404_NOT_FOUND
+                )
+
+            # Шаг 2. Оформляем: привязываем адрес(contact) и меняем статус
+            basket.contact_id = contact_id
+            basket.state = "new"
+            basket.save()
+
+            # Шаг 3. Инициируем сигнал new_order
+            from backend.signals import new_order
+
+            new_order.send(sender=self.__class__, user_id=request.user.id)
+
+            return Response({"Status": True, "Message": "Заказ успешно оформлен!"}, status=status.HTTP_200_OK)
+
+        return Response(
+            {"Status": False, "Errors": "Не передан контакт(адрес) доставки (поле contact)"},
+            status=status.HTTP_400_BAD_REQUEST,
         )

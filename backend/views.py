@@ -3,12 +3,13 @@ from django.contrib.auth.password_validation import validate_password
 from django.db import IntegrityError
 from rest_framework import status
 from rest_framework.authtoken.models import Token
+from rest_framework.generics import ListAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from backend.models import ConfirmEmailToken, User
-from backend.serializers import UserSerializer
+from backend.models import Category, ConfirmEmailToken, ProductInfo, Shop, User
+from backend.serializers import CategorySerializer, ProductInfoSerializer, ShopSerializer, UserSerializer
 
 
 class RegisterAccount(APIView):
@@ -143,3 +144,55 @@ class AccountDetails(APIView):
             return Response({"Status": True}, status=status.HTTP_200_OK)
 
         return Response({"Status": False, "Errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class CategoryView(ListAPIView):
+    """
+    Класс-представление для просмотра списка категорий.
+    Используем встроенный ListAPIView, так как это просто GET-список без сложной логики.
+    """
+
+    queryset = Category.objects.all()
+    serializer_class = CategorySerializer
+
+
+class ShopView(ListAPIView):
+    """
+    Класс-представление для просмотра списка магазинов.
+    Возвращаем только те магазины, где state=True (они принимают заказы).
+    """
+
+    queryset = Shop.objects.filter(state=True)
+    serializer_class = ShopSerializer
+
+
+class ProductInfoView(APIView):
+    """
+    Класс-представление для поиска товаров.
+    Тут мы используем APIView, чтобы удобно вручную прописать фильтры по GET-параметрам.
+    """
+
+    def get(self, request, *args, **kwargs):
+        # Стартовый QuerySet — выдаем информацию о товарах только из активных магазинов
+        query = ProductInfo.objects.filter(shop__state=True)
+
+        shop_id = request.query_params.get("shop_id")
+        category_id = request.query_params.get("category_id")
+
+        # Применяем фильтры, если юзер передал их в URL
+        if shop_id:
+            query = query.filter(shop_id=shop_id)
+
+        if category_id:
+            query = query.filter(product__category_id=category_id)
+
+        # ОПТИМИЗАЦИЯ БД (чтобы не было проблемы N+1 запросов):
+        # Подтягиваем связанные таблицы в один SQL-запрос
+        query = (
+            query.select_related("shop", "product__category")
+            .prefetch_related("product_parameters__parameter")
+            .distinct()
+        )
+
+        serializer = ProductInfoSerializer(query, many=True)
+        return Response(serializer.data)

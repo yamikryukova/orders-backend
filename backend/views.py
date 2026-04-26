@@ -1,5 +1,9 @@
+import requests
+import yaml
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
+from django.core.validators import URLValidator
 from django.db import IntegrityError
 from django.db.models import F, Sum
 from rest_framework import status
@@ -8,8 +12,21 @@ from rest_framework.generics import ListAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from yaml import Loader
 
-from backend.models import Category, ConfirmEmailToken, Contact, Order, OrderItem, ProductInfo, Shop, User
+from backend.models import (
+    Category,
+    ConfirmEmailToken,
+    Contact,
+    Order,
+    OrderItem,
+    Parameter,
+    Product,
+    ProductInfo,
+    ProductParameter,
+    Shop,
+    User,
+)
 from backend.serializers import (
     CategorySerializer,
     ContactSerializer,
@@ -394,3 +411,128 @@ class OrderView(APIView):
             {"Status": False, "Errors": "Не передан контакт(адрес) доставки (поле contact)"},
             status=status.HTTP_400_BAD_REQUEST,
         )
+
+
+class PartnerUpdate(APIView):
+    """
+    Класс для обновления прайса от поставщика (импорт товаров из YAML-файла).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        # Только магазины могут загружать прайсы
+        if request.user.type != "shop":
+            return Response({"Status": False, "Errors": "Только для магазинов"}, status=status.HTTP_403_FORBIDDEN)
+
+        url = request.data.get("url")
+        if url:
+            validate_url = URLValidator()
+            try:
+                validate_url(url)
+            except ValidationError as e:
+                return Response({"Status": False, "Errors": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                try:
+                    stream = requests.get(url).content
+                    data = yaml.load(stream, Loader=Loader)
+                except Exception as e:
+                    return Response(
+                        {"Status": False, "Errors": f"Не удалось загрузить или распарсить YAML: {e!s}"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                # Создаем или обновляем магазин
+                shop, _ = Shop.objects.get_or_create(name=data["shop"], user_id=request.user.id)
+
+                # Обработка категорий
+                for category in data["categories"]:
+                    category_obj, _ = Category.objects.get_or_create(id=category["id"], name=category["name"])
+                    category_obj.shops.add(shop.id)
+                    category_obj.save()
+
+                # Очищаем старые товары магазина, так как это полное обновление прайса
+                ProductInfo.objects.filter(shop_id=shop.id).delete()
+
+                # Обработка товаров
+                for item in data["goods"]:
+                    product, _ = Product.objects.get_or_create(name=item["name"], category_id=item["category"])
+
+                    product_info = ProductInfo.objects.create(
+                        product_id=product.id,
+                        external_id=item["id"],
+                        model=item["model"],
+                        price=item["price"],
+                        price_rrc=item["price_rrc"],
+                        quantity=item["quantity"],
+                        shop_id=shop.id,
+                    )
+
+                    # Обработка характеристик
+                    for name, value in item["parameters"].items():
+                        parameter_obj, _ = Parameter.objects.get_or_create(name=name)
+                        ProductParameter.objects.create(
+                            product_info_id=product_info.id, parameter_id=parameter_obj.id, value=value
+                        )
+
+                return Response({"Status": True, "Message": "Прайс-лист успешно обновлен!"}, status=status.HTTP_200_OK)
+
+        return Response({"Status": False, "Errors": "Не указан URL"}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class PartnerState(APIView):
+    """
+    Класс для управления статусом приема заказов магазином.
+    Поставщик может временно выключить магазин, чтобы товары пропали из каталога.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        if request.user.type != "shop":
+            return Response({"Status": False, "Errors": "Только для магазинов"}, status=status.HTTP_403_FORBIDDEN)
+
+        shop = request.user.shop
+        serializer = ShopSerializer(shop)
+        return Response(serializer.data)
+
+    def post(self, request, *args, **kwargs):
+        if request.user.type != "shop":
+            return Response({"Status": False, "Errors": "Только для магазинов"}, status=status.HTTP_403_FORBIDDEN)
+
+        state = request.data.get("state")
+        if state is not None:
+            # Приводим к boolean (на случай, если с фронта пришла строка 'true' или 'false')
+            request.user.shop.state = str(state).lower() == "true"
+            request.user.shop.save()
+            return Response({"Status": True}, status=status.HTTP_200_OK)
+
+        return Response({"Status": False, "Errors": "Не передан статус (state)"}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class PartnerOrders(APIView):
+    """
+    Класс для просмотра заказов конкретным магазином.
+    Показывает только те заказы, в которых присутствуют товары этого магазина.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        if request.user.type != "shop":
+            return Response({"Status": False, "Errors": "Только для магазинов"}, status=status.HTTP_403_FORBIDDEN)
+
+        # Фильтруем заказы, доставая только те, где фигурирует текущий магазин
+        orders = (
+            Order.objects.filter(ordered_items__product_info__shop__user=request.user)
+            .exclude(state="basket")
+            .prefetch_related(
+                "ordered_items__product_info__product__category",
+                "ordered_items__product_info__product_parameters__parameter",
+            )
+            .annotate(total_sum=Sum(F("ordered_items__quantity") * F("ordered_items__product_info__price")))
+            .distinct()
+        )
+
+        serializer = OrderSerializer(orders, many=True)
+        return Response(serializer.data)

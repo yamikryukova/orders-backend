@@ -5,22 +5,24 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 from django_rest_passwordreset.tokens import get_token_generator
 
-# Статусы, в которых может находиться заказанная корзина
-STATE_CHOICES = (
-    ("basket", "Статус корзины"),
-    ("new", "Новый"),
-    ("confirmed", "Подтвержден"),
-    ("assembled", "Собран"),
-    ("sent", "Отправлен"),
-    ("delivered", "Доставлен"),
-    ("canceled", "Отменен"),
-)
 
-# В нашей бизнес-логике всего 2 роли: поставщик и обычный покупатель
-USER_TYPE_CHOICES = (
-    ("shop", "Магазин"),
-    ("buyer", "Покупатель"),
-)
+class OrderStatus(models.TextChoices):
+    """Статусы, в которых может находиться заказ (от корзины до доставки)."""
+
+    BASKET = "basket", "Статус корзины"
+    NEW = "new", "Новый"
+    CONFIRMED = "confirmed", "Подтвержден"
+    ASSEMBLED = "assembled", "Собран"
+    SENT = "sent", "Отправлен"
+    DELIVERED = "delivered", "Доставлен"
+    CANCELED = "canceled", "Отменен"
+
+
+class UserType(models.TextChoices):
+    """В нашей бизнес-логике всего 2 роли: поставщик и обычный покупатель."""
+
+    SHOP = "shop", "Магазин"
+    BUYER = "buyer", "Покупатель"
 
 
 class UserManager(BaseUserManager):
@@ -92,7 +94,9 @@ class User(AbstractUser):
             "Указывает, следует ли считать этого пользователя активным. Снимите галочку вместо удаления аккаунтов."
         ),
     )
-    type = models.CharField(verbose_name="Тип пользователя", choices=USER_TYPE_CHOICES, max_length=5, default="buyer")
+    type = models.CharField(
+        verbose_name="Тип пользователя", choices=UserType.choices, max_length=5, default=UserType.BUYER
+    )
 
     class Meta:
         verbose_name = "Пользователь"
@@ -238,7 +242,7 @@ class Order(models.Model):
         "User", verbose_name="Пользователь", related_name="orders", blank=True, on_delete=models.CASCADE
     )
     dt = models.DateTimeField(auto_now_add=True)
-    state = models.CharField(verbose_name="Статус", choices=STATE_CHOICES, max_length=15)
+    state = models.CharField(verbose_name="Статус", choices=OrderStatus.choices, max_length=15)
     contact = models.ForeignKey(Contact, verbose_name="Контакт", blank=True, null=True, on_delete=models.CASCADE)
 
     class Meta:

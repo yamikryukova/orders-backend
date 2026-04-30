@@ -20,12 +20,14 @@ from backend.models import (
     Contact,
     Order,
     OrderItem,
+    OrderStatus,
     Parameter,
     Product,
     ProductInfo,
     ProductParameter,
     Shop,
     User,
+    UserType,
 )
 from backend.serializers import (
     CategorySerializer,
@@ -69,7 +71,7 @@ class RegisterAccount(APIView):
                         username=request.data["email"],
                         company=request.data["company"],
                         position=request.data["position"],
-                        type=request.data.get("type", "buyer"),
+                        type=request.data.get("type", UserType.BUYER),
                     )
                     user.set_password(request.data["password"])
                     user.save()
@@ -297,7 +299,7 @@ class BasketView(APIView):
     def get(self, request, *args, **kwargs):
         # Находим корзину юзера и считаем общую сумму через annotate
         basket = (
-            Order.objects.filter(user=request.user, state="basket")
+            Order.objects.filter(user=request.user, state=OrderStatus.BASKET)
             .prefetch_related(
                 "ordered_items__product_info__product__category",
                 "ordered_items__product_info__product_parameters__parameter",
@@ -312,7 +314,7 @@ class BasketView(APIView):
     def post(self, request, *args, **kwargs):
         items = request.data.get("items")
         if items:
-            basket, _ = Order.objects.get_or_create(user=request.user, state="basket")
+            basket, _ = Order.objects.get_or_create(user=request.user, state=OrderStatus.BASKET)
             # Проходим по всем переданным позициям (items - это список словарей)
             created_count = 0
             for item in items:
@@ -338,7 +340,7 @@ class BasketView(APIView):
     def put(self, request, *args, **kwargs):
         items = request.data.get("items")
         if items:
-            basket, _ = Order.objects.get_or_create(user=request.user, state="basket")
+            basket, _ = Order.objects.get_or_create(user=request.user, state=OrderStatus.BASKET)
             updated_count = 0
             for item in items:
                 # Ищем позицию в корзине и обновляем количество
@@ -356,7 +358,7 @@ class BasketView(APIView):
         items = request.data.get("items")
         if items:
             items_list = str(items).split(",")
-            basket, _ = Order.objects.get_or_create(user=request.user, state="basket")
+            basket, _ = Order.objects.get_or_create(user=request.user, state=OrderStatus.BASKET)
             deleted_count, _ = OrderItem.objects.filter(order=basket, product_info_id__in=items_list).delete()
             return Response({"Status": True, "Удалено": deleted_count}, status=status.HTTP_200_OK)
         return Response(
@@ -376,7 +378,7 @@ class OrderView(APIView):
         # Отдаем все заказы пользователя, ИСКЛЮЧАЯ текущую корзину (state='basket')
         orders = (
             Order.objects.filter(user=request.user)
-            .exclude(state="basket")
+            .exclude(state=OrderStatus.BASKET)
             .prefetch_related(
                 "ordered_items__product_info__product__category",
                 "ordered_items__product_info__product_parameters__parameter",
@@ -393,7 +395,7 @@ class OrderView(APIView):
         if contact_id:
             try:
                 # Шаг 1. Находим открытую корзину пользователя
-                basket = Order.objects.get(user=request.user, state="basket")
+                basket = Order.objects.get(user=request.user, state=OrderStatus.BASKET)
             except Order.DoesNotExist:
                 return Response(
                     {"Status": False, "Errors": "Нет открытой корзины для оформления"}, status=status.HTTP_404_NOT_FOUND
@@ -401,7 +403,7 @@ class OrderView(APIView):
 
             # Шаг 2. Оформляем: привязываем адрес(contact) и меняем статус
             basket.contact_id = contact_id
-            basket.state = "new"
+            basket.state = OrderStatus.NEW
             basket.save()
 
             # Шаг 3. Инициируем сигнал new_order
@@ -426,7 +428,7 @@ class PartnerUpdate(APIView):
 
     def post(self, request, *args, **kwargs):
         # Только магазины могут загружать прайсы
-        if request.user.type != "shop":
+        if request.user.type != UserType.SHOP:
             return Response({"Status": False, "Errors": "Только для магазинов"}, status=status.HTTP_403_FORBIDDEN)
 
         url = request.data.get("url")
@@ -493,7 +495,7 @@ class PartnerState(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
-        if request.user.type != "shop":
+        if request.user.type != UserType.SHOP:
             return Response({"Status": False, "Errors": "Только для магазинов"}, status=status.HTTP_403_FORBIDDEN)
 
         shop = request.user.shop
@@ -501,7 +503,7 @@ class PartnerState(APIView):
         return Response(serializer.data)
 
     def post(self, request, *args, **kwargs):
-        if request.user.type != "shop":
+        if request.user.type != UserType.SHOP:
             return Response({"Status": False, "Errors": "Только для магазинов"}, status=status.HTTP_403_FORBIDDEN)
 
         state = request.data.get("state")
@@ -523,13 +525,13 @@ class PartnerOrders(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
-        if request.user.type != "shop":
+        if request.user.type != UserType.SHOP:
             return Response({"Status": False, "Errors": "Только для магазинов"}, status=status.HTTP_403_FORBIDDEN)
 
         # Фильтруем заказы, доставая только те, где фигурирует текущий магазин
         orders = (
             Order.objects.filter(ordered_items__product_info__shop__user=request.user)
-            .exclude(state="basket")
+            .exclude(state=OrderStatus.BASKET)
             .prefetch_related(
                 "ordered_items__product_info__product__category",
                 "ordered_items__product_info__product_parameters__parameter",

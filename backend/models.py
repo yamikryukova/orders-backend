@@ -78,6 +78,7 @@ class User(AbstractUser):
     username = models.CharField(
         _("Имя пользователя"),
         max_length=150,
+        unique=True,
         help_text=_("Обязательное поле. Не более 150 символов. Только буквы, цифры и символы @/./+/-/_."),
         validators=[username_validator],
         error_messages={

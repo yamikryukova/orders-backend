@@ -131,6 +131,9 @@ AUTH_USER_MODEL = 'backend.User'
 # Просим Джанго выводить тексты писем с подтверждениями прямо в консоль разработчика
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 
+# Email администратора, на который отправляется накладная при оформлении заказа
+ADMIN_EMAIL = 'admin@example.com'
+
 # Глобальные настройки Django REST Framework
 REST_FRAMEWORK = {
     # Включаем пагинацию (чтобы не отдавать 1000 товаров одним ответом, а делить по страницам)

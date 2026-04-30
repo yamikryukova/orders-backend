@@ -3,7 +3,7 @@ from django.core.mail import EmailMultiAlternatives
 from django.dispatch import Signal, receiver
 from django_rest_passwordreset.signals import reset_password_token_created
 
-from backend.models import ConfirmEmailToken, User
+from backend.models import ConfirmEmailToken, Order, OrderStatus, User
 
 # Создаем свои кастомные сигналы для бизнес-логики магазина
 new_user_registered = Signal()
@@ -34,11 +34,12 @@ def new_user_registered_signal(user_id, **kwargs):
 @receiver(new_order)
 def new_order_signal(user_id, **kwargs):
     """
-    Обработчик сигнала: Отправляем письмо пользователю,
-    когда он успешно оформил новый заказ.
+    Обработчик сигнала: Отправляем письмо-подтверждение покупателю
+    и накладную на email администратора для исполнения заказа.
     """
     user = User.objects.get(id=user_id)
 
+    # --- Письмо покупателю (подтверждение) ---
     msg = EmailMultiAlternatives(
         subject="Обновление статуса заказа",
         body="Ваш заказ успешно сформирован и ожидает обработки!",
@@ -46,6 +47,54 @@ def new_order_signal(user_id, **kwargs):
         to=[user.email],
     )
     msg.send()
+
+    # --- Накладная администратору ---
+    # Находим последний оформленный заказ пользователя (статус 'new')
+    order = (
+        Order.objects.filter(user=user, state=OrderStatus.NEW)
+        .prefetch_related("ordered_items__product_info__product")
+        .order_by("-dt")
+        .first()
+    )
+
+    if order:
+        # Формируем текст накладной с перечнем товаров
+        lines = [
+            f"Накладная по заказу #{order.id}",
+            f"Дата: {order.dt:%d.%m.%Y %H:%M}",
+            f"Покупатель: {user.first_name} {user.last_name} ({user.email})",
+            "",
+        ]
+
+        # Адрес доставки
+        if order.contact:
+            lines.append(
+                f"Адрес доставки: г. {order.contact.city}, ул. {order.contact.street}, д. {order.contact.house}"
+            )
+            lines.append(f"Телефон: {order.contact.phone}")
+            lines.append("")
+
+        # Таблица позиций
+        lines.append("Позиции заказа:")
+        lines.append("-" * 40)
+        total = 0
+        for item in order.ordered_items.all():
+            subtotal = item.quantity * item.product_info.price
+            total += subtotal
+            lines.append(
+                f"  {item.product_info.product.name} — "
+                f"{item.quantity} шт. x {item.product_info.price} руб. = {subtotal} руб."
+            )
+        lines.append("-" * 40)
+        lines.append(f"ИТОГО: {total} руб.")
+
+        admin_msg = EmailMultiAlternatives(
+            subject=f"Новый заказ #{order.id} — накладная для исполнения",
+            body="\n".join(lines),
+            from_email=settings.EMAIL_HOST_USER,
+            to=[settings.ADMIN_EMAIL],
+        )
+        admin_msg.send()
 
 
 @receiver(reset_password_token_created)
